@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Multiplayer Ball Clicking Game</title>
+    <script src="https://www.gstatic.com/firebasejs/8.10.0/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.0/firebase-database.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            margin: 0;
+            padding: 0;
+        }
+
+        #gameContainer {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            background-color: #f0f0f0;
+            overflow: hidden;
+        }
+
+        .ball {
+            position: absolute;
+            background-color: red;
+            border-radius: 50%;
+            cursor: pointer;
+            width: 50px;
+            height: 50px;
+            animation: fadeIn 0.5s ease-in-out;
+            z-index: 1;
+        }
+
+        @keyframes fadeIn {
+            0% { opacity: 0; }
+            100% { opacity: 1; }
+        }
+
+        #readyButton {
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            padding: 15px 30px;
+            font-size: 18px;
+            background-color: #28a745;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            z-index: 9999;
+        }
+
+        #timer {
+            position: fixed;
+            top: 20px;
+            left: 100px;
+            font-size: 36px;
+            font-weight: bold;
+            z-index: 9999;
+        }
+
+        #score {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            font-size: 20px;
+            font-weight: bold;
+            z-index: 9999;
+        }
+
+        #scoreboard {
+            position: fixed;
+            top: 80px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 18px;
+            font-weight: bold;
+            z-index: 9999;
+        }
+
+        #scoreboard .player {
+            margin: 5px;
+        }
+
+        #winnerText {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 36px;
+            font-weight: bold;
+            z-index: 9999;
+            display: none;  /* Initially hidden */
+        }
+    </style>
+</head>
+<body>
+    <div id="gameContainer">
+        <button id="readyButton">Ready</button>
+        <div id="timer"></div>
+        <div id="score">Score: 0</div>
+        <div id="scoreboard">
+            <div class="player" id="player1Score">Player 1 Score: 0</div>
+            <div class="player" id="player2Score">Player 2 Score: 0</div>
+        </div>
+        <div id="winnerText"></div>
+    </div>
+
+    <script>
+        // Firebase Configuration
+        const firebaseConfig = {
+            apiKey: "AIzaSyAt5SVxR8gKVhljCQDmEM-Ss2MfLnKG2u4",
+            authDomain: "palloclickeri.firebaseapp.com",
+            databaseURL: "https://palloclickeri-default-rtdb.europe-west1.firebasedatabase.app",
+            projectId: "palloclickeri",
+            storageBucket: "palloclickeri.appspot.com",
+            messagingSenderId: "645560942467",
+            appId: "1:645560942467:web:8732b5e41c1f8066c680b6"
+        };
+
+        // Initialize Firebase
+        firebase.initializeApp(firebaseConfig);
+        const database = firebase.database();
+        const gameRef = database.ref("game");
+        const ballsRef = gameRef.child("balls");
+        const readyRef = gameRef.child("ready");
+        const countdownRef = gameRef.child("countdown");
+        const scoreRef = gameRef.child("scores");
+        const winnerRef = gameRef.child("winner");
+
+        const readyButton = document.getElementById("readyButton");
+        const timerDisplay = document.getElementById("timer");
+        const player1ScoreDisplay = document.getElementById("player1Score");
+        const player2ScoreDisplay = document.getElementById("player2Score");
+        const winnerText = document.getElementById("winnerText");
+
+        let playerId = Math.random().toString(36).substring(7); // Generate unique ID
+        let playerRole = null; // Player's role: "player1" or "player2"
+        let score = 0;
+        let gameStarted = false;
+        let ballsClicked = 0;
+        const maxBallsClicked = 10; // Set a max limit for ball clicks
+
+        // Firebase player role assignment
+        const playersRef = database.ref("players");
+        playersRef.once("value", (snapshot) => {
+            const players = snapshot.val() || {};
+            if (!players.player1) {
+                playerRole = "player1";
+                playersRef.child("player1").set(playerId);
+            } else if (!players.player2) {
+                playerRole = "player2";
+                playersRef.child("player2").set(playerId);
+            } else {
+                alert("Game is full! Please try again later.");
+                playerRole = null; // Prevent game actions
+            }
+
+            // Clean up role on disconnect
+            if (playerRole) {
+                playersRef.child(playerRole).onDisconnect().remove();
+            }
+        });
+
+        // Ready button click handler
+        readyButton.addEventListener("click", () => {
+            if (!gameStarted && playerRole !== null) {
+                readyRef.child(playerRole).set(true); // Mark player as ready
+
+                // Check if both players are ready
+                readyRef.once("value", (snapshot) => {
+                    const readyState = snapshot.val() || {};
+                    if (readyState.player1 && readyState.player2) {
+                        startCountdown();  // Both players are ready, start the countdown
+                    }
+                });
+            }
+        });
+
+        // Start the 3-second countdown timer for both players
+        const startCountdown = () => {
+            let countdown = 3;
+            countdownRef.set(countdown);
+
+            // Update countdown for both players in real-time
+            const countdownInterval = setInterval(() => {
+                countdown--;
+                countdownRef.set(countdown);
+
+                if (countdown === 0) {
+                    clearInterval(countdownInterval);
+                    startGame(); // Start game after countdown
+                }
+            }, 1000);
+        };
+
+        // Listen for countdown updates and display them
+        countdownRef.on("value", (snapshot) => {
+            const countdown = snapshot.val();
+            if (countdown !== null) {
+                timerDisplay.textContent = countdown;
+            }
+        });
+
+        // Start the game by generating balls and updating the Firebase state
+        const startGame = () => {
+            gameStarted = true;
+            // Clear any existing balls before starting new ones
+            ballsRef.remove().then(() => {
+                generateBalls();  // Start generating new balls after clearing old ones
+            });
+        };
+
+        // Generate multiple balls at random positions
+        const generateBalls = () => {
+            const numberOfBalls = 10;  // Set a limit for the number of balls
+            for (let i = 0; i < numberOfBalls; i++) {
+                const ballId = Math.random().toString(36).substring(7); // Unique ID for each ball
+                const x = Math.random() * (window.innerWidth - 50);  // Ensure ball stays within screen width
+                const y = Math.random() * (window.innerHeight - 50); // Ensure ball stays within screen height
+
+                // Add the ball to Firebase with visibility set to true
+                ballsRef.child(ballId).set({
+                    id: ballId,
+                    x: x,
+                    y: y,
+                    visible: true
+                });
+            }
+        };
+
+        // Listen for ball updates and display them on the screen
+        ballsRef.on("child_added", (snapshot) => {
+            const ball = snapshot.val();
+            if (ball && ball.visible) {
+                createBall(ball.id, ball.x, ball.y);  // Only create the ball if it's visible
+            }
+        });
+
+        // Listen for ball visibility updates
+        ballsRef.on("child_changed", (snapshot) => {
+            const ball = snapshot.val();
+            if (ball && !ball.visible) {
+                removeBall(snapshot.key);  // If visible is false, remove the ball
+            }
+        });
+
+        // Listen for ball removal
+        ballsRef.on("child_removed", (snapshot) => {
+            const ballId = snapshot.key;
+            removeBall(ballId);  // Ensure ball is removed from UI when it's deleted in Firebase
+        });
+
+        // Create and display a ball on the screen
+        const createBall = (ballId, x, y) => {
+            const ball = document.createElement("div");
+            ball.classList.add("ball");
+            ball.style.left = `${x}px`;
+            ball.style.top = `${y}px`;
+            ball.dataset.id = ballId;
+            ball.addEventListener("click", () => {
+                handleBallClick(ballId);  // Handle ball click event
+            });
+            document.getElementById("gameContainer").appendChild(ball);
+        };
+
+        // Remove a ball from both screens
+        const removeBall = (ballId) => {
+            const ball = document.querySelector(`[data-id="${ballId}"]`);
+            if (ball) {
+                ball.remove();  // Remove the ball from the DOM
+            }
+        };
+
+        // Handle ball click event and update score
+        const handleBallClick = (ballId) => {
+            ballsRef.child(ballId).update({ visible: false });  // Mark ball as invisible on Firebase
+
+            // Update the score of the current player
+            scoreRef.child(playerRole).transaction((score) => (score || 0) + 1);
+            ballsClicked += 1; // Track total number of balls clicked
+
+            // Check if all balls have been clicked (10 balls in total)
+            if (ballsClicked >= maxBallsClicked) {
+                endGame(); // End the game when 10 balls are clicked
+            }
+        };
+
+        // End the game and determine the winner
+        const endGame = () => {
+            gameStarted = false;
+
+            scoreRef.once("value", (snapshot) => {
+                const scores = snapshot.val() || {};
+                const player1Score = scores.player1 || 0;
+                const player2Score = scores.player2 || 0;
+
+                let winnerMessage = '';
+                if (player1Score > player2Score) {
+                    winnerMessage = 'Player 1 wins!';
+                } else if (player1Score < player2Score) {
+                    winnerMessage = 'Player 2 wins!';
+                } else {
+                    winnerMessage = 'It\'s a tie!';
+                }
+
+                // Store winner message in Firebase
+                winnerRef.set(winnerMessage);
+
+                // Call resetGame after a brief moment to allow players to see the result
+                setTimeout(() => {
+                    resetGame(); // Reset game after showing the winner message
+                }, 3000);  // Wait 3 seconds before resetting
+            });
+        };
+
+        // Reset the game (including hiding winner text)
+        const resetGame = () => {
+            ballsClicked = 0;
+            scoreRef.set({
+                player1: 0,
+                player2: 0
+            });
+
+            // Update score display
+            player1ScoreDisplay.textContent = `Player 1 Score: 0`;
+            player2ScoreDisplay.textContent = `Player 2 Score: 0`;
+
+            winnerText.style.display = 'none'; // Hide the winner text
+            ballsRef.remove();
+
+            generateBalls(); // Generate new balls for the next round
+        };
+
+        // Listen for the winner message change and display the winner
+        winnerRef.on("value", (snapshot) => {
+            const winnerMessage = snapshot.val();
+            if (winnerMessage) {
+                winnerText.textContent = winnerMessage;
+                winnerText.style.display = "block";  // Show the winner text
+            }
+        });
+
+        // Listen for score updates
+        scoreRef.on("value", (snapshot) => {
+            const scores = snapshot.val() || {};
+            player1ScoreDisplay.textContent = `Player 1 Score: ${scores.player1 || 0}`;
+            player2ScoreDisplay.textContent = `Player 2 Score: ${scores.player2 || 0}`;
+        });
+    </script>
+</body>
+</html>
